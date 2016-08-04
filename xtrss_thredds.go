@@ -1,39 +1,38 @@
 package main
 
 import (
-	"fmt"
-	"log"
-	"flag"
-	"time"
-	"sync"
-	"strings"
-	"io/ioutil"
-	"net/http"
 	"database/sql"
+	"flag"
+	"fmt"
 	_ "github.com/lib/pq"
+	"io/ioutil"
+	"log"
 	"math/rand"
+	"net/http"
+	"strings"
+	"sync"
+	"time"
 )
 
 const (
-    DB_HOST     = "130.56.243.194"
-    DB_USER     = "metadata"
-    DB_PASSWORD = "WdrjGgj9AQNC"
-    DB_NAME     = "metadata"
-    maxExtent   = 11000
+	DB_HOST     = "130.56.243.194"
+	DB_USER     = "metadata"
+	DB_PASSWORD = "WdrjGgj9AQNC"
+	DB_NAME     = "metadata"
+	maxExtent   = 11000
 )
 
-var units map[int]string = map[int]string{0:"B", 1:"kB", 2:"MB", 3:"TB", 4:"PB"}
+var units map[int]string = map[int]string{0: "B", 1: "kB", 2: "MB", 3: "TB", 4: "PB"}
 
 func getHumanSize(size uint64) string {
 	i := 0
 	for size > 1024 {
-		size = size>>10
+		size = size >> 10
 		i += 1
 	}
 
 	return fmt.Sprintf("%d %s", size, units[i])
 }
-
 
 func getFiles(n int) []string {
 	files := []string{}
@@ -70,17 +69,17 @@ var dapBin map[bool]string = map[bool]string{true: "dods", false: "ascii"}
 func getURLs(host string, n, extent int, bin bool, r *rand.Rand) []string {
 
 	xi := 0
-       	yi := 0
+	yi := 0
 
 	if extent < maxExtent {
-	        xi = r.Intn(maxExtent-extent)
-       		yi = r.Intn(maxExtent-extent)
+		xi = r.Intn(maxExtent - extent)
+		yi = r.Intn(maxExtent - extent)
 	}
 
 	baseDAP := "http://" + host + "/thredds/dodsC/rr5/satellite/obs/himawari8/%s/%s/%s/%s/%s/%s.%s?channel_00%s_brf[0:1:0][%d:1:%d][%d:1:%d]"
 	res := getFiles(n)
 	out := []string{}
-	for _, fileName := range(res) {
+	for _, fileName := range res {
 		parts := strings.Split(fileName, "/")
 		out = append(out, fmt.Sprintf(baseDAP, parts[7], parts[8], parts[9], parts[10], parts[11], parts[12], dapBin[bin], parts[12][29:31], xi, xi+extent-1, yi, yi+extent-1))
 	}
@@ -113,16 +112,17 @@ type TotalRead struct {
 
 func main() {
 
-	host := flag.String("h", "130.56.243.208", "Thredds host ip.")
+	host := flag.String("h", "dapds03.nci.org.au", "Thredds host ip.")
 	extent := flag.Int("ext", maxExtent, "Extent of the request.")
 	nReqs := flag.Int("n", 1, "Number of concurrent requests submitted to the server.")
+	interval := flag.Int("i", 0, "Interval in secods between groups of requests.")
 	bin := flag.Bool("b", true, "Binary/Text Response from THREDDS.")
 	verbose := flag.Bool("v", false, "Verbose mode for debuging.")
 
 	flag.Parse()
 
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
-	
+
 	urls := getURLs(*host, *nReqs, *extent, *bin, r)
 
 	if *verbose {
@@ -135,12 +135,23 @@ func main() {
 	var wg sync.WaitGroup
 	totalRead := TotalRead{&sync.Mutex{}, 0}
 
-	start := time.Now()
-	for _, url := range(urls) {
-		wg.Add(1)
-		go readURL(url, &totalRead,  &wg)
+	if *interval > 0 {
+		for range time.Tick(time.Duration(*interval) * time.Second) {
+			for _, url := range urls {
+				wg.Add(1)
+				go readURL(url, &totalRead, &wg)
+			}
+			fmt.Println(fmt.Sprintf("Request Sent:------->[%d Concurrent requests sent]", *nReqs))
+			urls = getURLs(*host, *nReqs, *extent, *bin, r)
+		}
 	}
-	
+
+	start := time.Now()
+	for _, url := range urls {
+		wg.Add(1)
+		go readURL(url, &totalRead, &wg)
+	}
+
 	wg.Wait()
 	lapse := time.Since(start).Seconds()
 	fmt.Printf("Time: %f seconds\n", lapse)
