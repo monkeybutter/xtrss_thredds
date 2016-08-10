@@ -112,7 +112,7 @@ func GetStats(statsInterval int, totalBytes, totalReqs *uint64) {
 	prevTotalBytes := uint64(0)
 	prevTotalReqs := uint64(0)
 	for range time.Tick(time.Duration(statsInterval) * time.Second) {
-		fmt.Printf("Throughput: %s/s | Request Received: %d | Total Data Received: %s\n", getHumanSize((*totalBytes-prevTotalBytes)/uint64(statsInterval)), *totalReqs-prevTotalReqs, getHumanSize(*totalBytes))
+		fmt.Printf("Throughput: %s/s | Requests Received: %d | Total Data Received: %s\n", getHumanSize((*totalBytes-prevTotalBytes)/uint64(statsInterval)), *totalReqs-prevTotalReqs, getHumanSize(*totalBytes))
 		prevTotalBytes = *totalBytes
 		prevTotalReqs = *totalReqs
 	}
@@ -158,5 +158,5 @@ func main() {
 
 	go GetStats(1, &totalBytes, &totalReqs)
 	readURL(stream, &totalBytes, &totalReqs)
-	fmt.Printf("END | Request Received: %d | Total Data Received: %s\n", totalReqs, getHumanSize(totalBytes))
+	fmt.Printf("END | Requests Received: %d | Total Data Received: %s\n", totalReqs, getHumanSize(totalBytes))
 }
