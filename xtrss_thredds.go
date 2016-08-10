@@ -1,17 +1,16 @@
 package main
 
 import (
-	"database/sql"
-	"flag"
 	"fmt"
-	_ "github.com/lib/pq"
-	"io/ioutil"
-	"log"
-	"math/rand"
-	"net/http"
+	"flag"
 	"strings"
-	"sync"
+	"log"
+	"io/ioutil"
+	"net/http"
+	"math/rand"
+	"database/sql"
 	"time"
+	_ "github.com/lib/pq"
 )
 
 const (
@@ -34,40 +33,29 @@ func getHumanSize(size uint64) string {
 	return fmt.Sprintf("%d %s", size, units[i])
 }
 
-func getFiles(n int) []string {
-	files := []string{}
-
-	dbinfo := fmt.Sprintf("host= %s user=%s password=%s dbname=%s sslmode=disable", DB_HOST, DB_USER, DB_PASSWORD, DB_NAME)
-	db, err := sql.Open("postgres", dbinfo)
-	if err != nil {
-		log.Fatal(err)
-		fmt.Println(err)
-	}
-	defer db.Close()
-
-	rows, err := db.Query(`SELECT fi_parent || '/' || fi_name FROM files_rr5 WHERE fi_parent LIKE '/g/data2/rr5/satellite/obs/himawari8/FLDK/201%' AND fi_name LIKE '%P1S-ABOM_BRF_B01-PRJ_GEOS141_1000-HIMAWARI8-AHI.nc' ORDER BY random() LIMIT $1;`, n)
-	if err != nil {
-		fmt.Println(err)
-		log.Fatal(err)
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var path string
-		err = rows.Scan(&path)
-		if err != nil {
-			log.Fatal(err)
-		}
-		files = append(files, path)
-	}
-
-	return files
-}
-
 var dapBin map[bool]string = map[bool]string{true: "dods", false: "ascii"}
 
-func getURLs(host string, n, extent int, bin bool, r *rand.Rand) []string {
+func readURL(buf chan string, totalBytes, totalReqs *uint64) {
 
+	for url := range(buf) {
+		resp, err := http.Get(url)
+		if err != nil {
+			log.Printf("Error doing GET: %s\n", err)
+		}
+
+		defer resp.Body.Close()
+		body, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			log.Printf("Error reading HTTP body: %s\n", err)
+		}
+		*totalBytes += uint64(len(body))
+		*totalReqs += 1
+	}
+}
+
+func FileName2DAP(fileName, host string, extent int, bin bool, r *rand.Rand) string {
+
+	baseDAP := "http://" + host + "/thredds/dodsC/rr5/satellite/obs/himawari8/%s/%s/%s/%s/%s/%s.%s?channel_00%s_brf[0:1:0][%d:1:%d][%d:1:%d]"
 	xi := 0
 	yi := 0
 
@@ -76,42 +64,51 @@ func getURLs(host string, n, extent int, bin bool, r *rand.Rand) []string {
 		yi = r.Intn(maxExtent - extent)
 	}
 
-	baseDAP := "http://" + host + "/thredds/dodsC/rr5/satellite/obs/himawari8/%s/%s/%s/%s/%s/%s.%s?channel_00%s_brf[0:1:0][%d:1:%d][%d:1:%d]"
-	res := getFiles(n)
-	out := []string{}
-	for _, fileName := range res {
-		parts := strings.Split(fileName, "/")
-		out = append(out, fmt.Sprintf(baseDAP, parts[7], parts[8], parts[9], parts[10], parts[11], parts[12], dapBin[bin], parts[12][29:31], xi, xi+extent-1, yi, yi+extent-1))
-	}
-	return out
+	parts := strings.Split(fileName, "/")
+
+	return fmt.Sprintf(baseDAP, parts[7], parts[8], parts[9], parts[10], parts[11], parts[12], dapBin[bin], parts[12][29:31], xi, xi+extent-1, yi, yi+extent-1)
 }
 
-func readURL(url string, total *TotalRead, wg *sync.WaitGroup) {
-	defer wg.Done()
-	resp, err := http.Get(url)
-	if err != nil {
-		fmt.Println("Error doing GET", err)
-		return
+func LoadBuffer(buf chan string, host string, n, extent int, bin, closeChan bool, r *rand.Rand, db *sql.DB) {
+	if closeChan {
+		defer close(buf)
 	}
 
-	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
+	rows, err := db.Query(`SELECT fi_parent || '/' || fi_name FROM files_rr5 WHERE fi_parent LIKE '/g/data2/rr5/satellite/obs/himawari8/FLDK/201%' AND fi_name LIKE '%P1S-ABOM_BRF_B01-PRJ_GEOS141_1000-HIMAWARI8-AHI.nc' ORDER BY random() LIMIT $1;`, n)
+
 	if err != nil {
-		fmt.Println("Error reading Body", err)
-		return
+		log.Fatal(err)
 	}
-	total.Lock()
-	total.Bytes += uint64(len(body))
-	total.Unlock()
+	defer rows.Close()
+
+	for rows.Next() {
+		var fileName string
+		err = rows.Scan(&fileName)
+		if err != nil {
+			log.Fatal(err)
+		}
+		buf <- FileName2DAP(fileName, host, extent, bin, r)
+	}
 }
 
-type TotalRead struct {
-	*sync.Mutex
-	Bytes uint64
+func StreamBuffer(buf chan string, host string, n, interval, extent int, bin bool, r *rand.Rand, db *sql.DB) {
+	for range time.Tick(time.Duration(interval) * time.Second) {
+		go LoadBuffer(buf, host, n, extent, bin, false, r, db)
+	}
+}
+
+func GetStats(statsInterval int, totalBytes, totalReqs *uint64) {
+	prevTotalBytes := uint64(0)
+	prevTotalReqs := uint64(0)
+	for range time.Tick(time.Duration(statsInterval) * time.Second) {
+		fmt.Printf("Throughput: %s/s | Request Received: %d | Total Data Received: %s\n", getHumanSize((*totalBytes - prevTotalBytes)/uint64(statsInterval)), *totalReqs - prevTotalReqs, getHumanSize(*totalBytes))
+		prevTotalBytes = *totalBytes
+		prevTotalReqs = *totalReqs
+	}
 }
 
 func main() {
-
+	
 	host := flag.String("h", "dapds03.nci.org.au", "Thredds host ip.")
 	extent := flag.Int("ext", maxExtent, "Extent of the request.")
 	nReqs := flag.Int("n", 1, "Number of concurrent requests submitted to the server.")
@@ -123,38 +120,31 @@ func main() {
 
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 
-	urls := getURLs(*host, *nReqs, *extent, *bin, r)
-
 	if *verbose {
 		fmt.Println("----------------DEBUG----------------")
 		fmt.Printf("Thredds Server: %s\n", *host)
-		fmt.Println("GET Requests:", urls)
 		fmt.Println("--------------------------------------")
 	}
 
-	var wg sync.WaitGroup
-	totalRead := TotalRead{&sync.Mutex{}, 0}
+	dbinfo := fmt.Sprintf("host= %s user=%s password=%s dbname=%s sslmode=disable", DB_HOST, DB_USER, DB_PASSWORD, DB_NAME)
+	db, err := sql.Open("postgres", dbinfo)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer db.Close()
+
+	stream := make(chan string, *nReqs)
 
 	if *interval > 0 {
-		for range time.Tick(time.Duration(*interval) * time.Second) {
-			for _, url := range urls {
-				wg.Add(1)
-				go readURL(url, &totalRead, &wg)
-			}
-			fmt.Println(fmt.Sprintf("Request Sent:------->[%d Concurrent requests sent]", *nReqs))
-			urls = getURLs(*host, *nReqs, *extent, *bin, r)
-		}
+		go StreamBuffer(stream, *host, *nReqs, *interval, *extent, *bin, r, db)
+	} else {
+		go LoadBuffer(stream, *host, *nReqs, *extent, *bin, true, r, db)
 	}
 
-	start := time.Now()
-	for _, url := range urls {
-		wg.Add(1)
-		go readURL(url, &totalRead, &wg)
-	}
+	totalBytes := uint64(0) 
+	totalReqs := uint64(0) 
 
-	wg.Wait()
-	lapse := time.Since(start).Seconds()
-	fmt.Printf("Time: %f seconds\n", lapse)
-	fmt.Printf("Data: %d x %s\n", *nReqs, getHumanSize(totalRead.Bytes/uint64(*nReqs)))
-	fmt.Printf("Throughput: %s/s\n", getHumanSize(uint64(float64(totalRead.Bytes)/lapse)))
+	go GetStats(1, &totalBytes, &totalReqs)
+	readURL(stream, &totalBytes, &totalReqs)
+	fmt.Printf("END | Request Received: %d | Total Data Received: %s\n", totalReqs, getHumanSize(totalBytes))
 }
