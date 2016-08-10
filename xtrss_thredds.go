@@ -1,16 +1,16 @@
 package main
 
 import (
-	"fmt"
-	"flag"
-	"strings"
-	"log"
-	"io/ioutil"
-	"net/http"
-	"math/rand"
 	"database/sql"
-	"time"
+	"flag"
+	"fmt"
 	_ "github.com/lib/pq"
+	"io/ioutil"
+	"log"
+	"math/rand"
+	"net/http"
+	"strings"
+	"time"
 )
 
 const (
@@ -20,6 +20,15 @@ const (
 	DB_NAME     = "metadata"
 	maxExtent   = 11000
 )
+
+type Params struct {
+	Host     string
+	NReqs    int
+	Interval int
+	Extent   int
+	Bin      bool
+	Verbose  bool
+}
 
 var units map[int]string = map[int]string{0: "B", 1: "kB", 2: "MB", 3: "TB", 4: "PB"}
 
@@ -37,44 +46,46 @@ var dapBin map[bool]string = map[bool]string{true: "dods", false: "ascii"}
 
 func readURL(buf chan string, totalBytes, totalReqs *uint64) {
 
-	for url := range(buf) {
+	for url := range buf {
 		resp, err := http.Get(url)
 		if err != nil {
 			log.Printf("Error doing GET: %s\n", err)
+			continue
 		}
 
 		defer resp.Body.Close()
 		body, err := ioutil.ReadAll(resp.Body)
 		if err != nil {
 			log.Printf("Error reading HTTP body: %s\n", err)
+			continue
 		}
 		*totalBytes += uint64(len(body))
 		*totalReqs += 1
 	}
 }
 
-func FileName2DAP(fileName, host string, extent int, bin bool, r *rand.Rand) string {
+func FileName2DAP(fileName string, params Params, r *rand.Rand) string {
 
-	baseDAP := "http://" + host + "/thredds/dodsC/rr5/satellite/obs/himawari8/%s/%s/%s/%s/%s/%s.%s?channel_00%s_brf[0:1:0][%d:1:%d][%d:1:%d]"
+	baseDAP := "http://" + params.Host + "/thredds/dodsC/rr5/satellite/obs/himawari8/%s/%s/%s/%s/%s/%s.%s?channel_00%s_brf[0:1:0][%d:1:%d][%d:1:%d]"
 	xi := 0
 	yi := 0
 
-	if extent < maxExtent {
-		xi = r.Intn(maxExtent - extent)
-		yi = r.Intn(maxExtent - extent)
+	if params.Extent < maxExtent {
+		xi = r.Intn(maxExtent - params.Extent)
+		yi = r.Intn(maxExtent - params.Extent)
 	}
 
 	parts := strings.Split(fileName, "/")
 
-	return fmt.Sprintf(baseDAP, parts[7], parts[8], parts[9], parts[10], parts[11], parts[12], dapBin[bin], parts[12][29:31], xi, xi+extent-1, yi, yi+extent-1)
+	return fmt.Sprintf(baseDAP, parts[7], parts[8], parts[9], parts[10], parts[11], parts[12], dapBin[params.Bin], parts[12][29:31], xi, xi+params.Extent-1, yi, yi+params.Extent-1)
 }
 
-func LoadBuffer(buf chan string, host string, n, extent int, bin, closeChan bool, r *rand.Rand, db *sql.DB) {
+func LoadBuffer(buf chan string, params Params, closeChan bool, r *rand.Rand, db *sql.DB) {
 	if closeChan {
 		defer close(buf)
 	}
 
-	rows, err := db.Query(`SELECT fi_parent || '/' || fi_name FROM files_rr5 WHERE fi_parent LIKE '/g/data2/rr5/satellite/obs/himawari8/FLDK/201%' AND fi_name LIKE '%P1S-ABOM_BRF_B01-PRJ_GEOS141_1000-HIMAWARI8-AHI.nc' ORDER BY random() LIMIT $1;`, n)
+	rows, err := db.Query(`SELECT fi_parent || '/' || fi_name FROM files_rr5 WHERE fi_parent LIKE '/g/data2/rr5/satellite/obs/himawari8/FLDK/201%' AND fi_name LIKE '%P1S-ABOM_BRF_B01-PRJ_GEOS141_1000-HIMAWARI8-AHI.nc' ORDER BY random() LIMIT $1;`, params.NReqs)
 
 	if err != nil {
 		log.Fatal(err)
@@ -87,13 +98,13 @@ func LoadBuffer(buf chan string, host string, n, extent int, bin, closeChan bool
 		if err != nil {
 			log.Fatal(err)
 		}
-		buf <- FileName2DAP(fileName, host, extent, bin, r)
+		buf <- FileName2DAP(fileName, params, r)
 	}
 }
 
-func StreamBuffer(buf chan string, host string, n, interval, extent int, bin bool, r *rand.Rand, db *sql.DB) {
-	for range time.Tick(time.Duration(interval) * time.Second) {
-		go LoadBuffer(buf, host, n, extent, bin, false, r, db)
+func StreamBuffer(buf chan string, params Params, r *rand.Rand, db *sql.DB) {
+	for range time.Tick(time.Duration(params.Interval) * time.Second) {
+		go LoadBuffer(buf, params, false, r, db)
 	}
 }
 
@@ -101,14 +112,14 @@ func GetStats(statsInterval int, totalBytes, totalReqs *uint64) {
 	prevTotalBytes := uint64(0)
 	prevTotalReqs := uint64(0)
 	for range time.Tick(time.Duration(statsInterval) * time.Second) {
-		fmt.Printf("Throughput: %s/s | Request Received: %d | Total Data Received: %s\n", getHumanSize((*totalBytes - prevTotalBytes)/uint64(statsInterval)), *totalReqs - prevTotalReqs, getHumanSize(*totalBytes))
+		fmt.Printf("Throughput: %s/s | Request Received: %d | Total Data Received: %s\n", getHumanSize((*totalBytes-prevTotalBytes)/uint64(statsInterval)), *totalReqs-prevTotalReqs, getHumanSize(*totalBytes))
 		prevTotalBytes = *totalBytes
 		prevTotalReqs = *totalReqs
 	}
 }
 
 func main() {
-	
+
 	host := flag.String("h", "dapds03.nci.org.au", "Thredds host ip.")
 	extent := flag.Int("ext", maxExtent, "Extent of the request.")
 	nReqs := flag.Int("n", 1, "Number of concurrent requests submitted to the server.")
@@ -118,9 +129,10 @@ func main() {
 
 	flag.Parse()
 
+	params := Params{Host: *host, Extent: *extent, NReqs: *nReqs, Interval: *interval, Bin: *bin, Verbose: *verbose}
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 
-	if *verbose {
+	if params.Verbose {
 		fmt.Println("----------------DEBUG----------------")
 		fmt.Printf("Thredds Server: %s\n", *host)
 		fmt.Println("--------------------------------------")
@@ -133,16 +145,16 @@ func main() {
 	}
 	defer db.Close()
 
-	stream := make(chan string, *nReqs)
+	stream := make(chan string, params.NReqs)
 
 	if *interval > 0 {
-		go StreamBuffer(stream, *host, *nReqs, *interval, *extent, *bin, r, db)
+		go StreamBuffer(stream, params, r, db)
 	} else {
-		go LoadBuffer(stream, *host, *nReqs, *extent, *bin, true, r, db)
+		go LoadBuffer(stream, params, true, r, db)
 	}
 
-	totalBytes := uint64(0) 
-	totalReqs := uint64(0) 
+	totalBytes := uint64(0)
+	totalReqs := uint64(0)
 
 	go GetStats(1, &totalBytes, &totalReqs)
 	readURL(stream, &totalBytes, &totalReqs)
