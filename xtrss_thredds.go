@@ -47,20 +47,23 @@ var dapBin map[bool]string = map[bool]string{true: "dods", false: "ascii"}
 func readURL(buf chan string, totalBytes, totalReqs *uint64) {
 
 	for url := range buf {
-		resp, err := http.Get(url)
-		if err != nil {
-			log.Printf("Error doing GET: %s\n", err)
-			continue
-		}
+		go func() {
+			resp, err := http.Get(url)
+			if err != nil {
+				log.Printf("Error doing GET: %s\n", err)
+				return
+			}
 
-		defer resp.Body.Close()
-		body, err := ioutil.ReadAll(resp.Body)
-		if err != nil {
-			log.Printf("Error reading HTTP body: %s\n", err)
-			continue
-		}
-		*totalBytes += uint64(len(body))
-		*totalReqs += 1
+			defer resp.Body.Close()
+			body, err := ioutil.ReadAll(resp.Body)
+			if err != nil {
+				log.Printf("Error reading HTTP body: %s\n", err)
+				return
+			}
+
+			*totalBytes += uint64(len(body))
+			*totalReqs += 1
+		}()
 	}
 }
 
@@ -100,6 +103,7 @@ func LoadBuffer(buf chan string, params Params, closeChan bool, r *rand.Rand, db
 		}
 		buf <- FileName2DAP(fileName, params, r)
 	}
+	fmt.Println("Buffer loaded")
 }
 
 func StreamBuffer(buf chan string, params Params, r *rand.Rand, db *sql.DB) {
