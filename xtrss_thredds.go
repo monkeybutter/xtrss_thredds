@@ -103,7 +103,6 @@ func LoadBuffer(buf chan string, params Params, closeChan bool, r *rand.Rand, db
 		}
 		buf <- FileName2DAP(fileName, params, r)
 	}
-	fmt.Println("Buffer loaded")
 }
 
 func StreamBuffer(buf chan string, params Params, r *rand.Rand, db *sql.DB) {
