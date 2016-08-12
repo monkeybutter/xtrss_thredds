@@ -159,7 +159,7 @@ func main() {
 	totalBytes := uint64(0)
 	totalReqs := uint64(0)
 
-	go GetStats(1, &totalBytes, &totalReqs)
+	go GetStats(params.Interval, &totalBytes, &totalReqs)
 	readURL(stream, &totalBytes, &totalReqs)
 	fmt.Printf("END | Requests Received: %d | Total Data Received: %s\n", totalReqs, getHumanSize(totalBytes))
 }
