@@ -1,2 +1,2 @@
 # xtrss_thredds
-A tool to generate random traffic for THREDDS servers
+A tool for generating random traffic for THREDDS servers
