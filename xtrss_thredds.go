@@ -48,7 +48,7 @@ func PrintStats(statsInterval int, totalBytes, totalReqs *xtrss.ConcCounter) {
 
 func main() {
 	host := flag.String("h", "dapds03.nci.org.au", "Thredds host ip.")
-	data := flag.String("data", "himawari", "Dataset used to test THREDDS.")
+	feed := flag.String("feed", "himawari", "Dataset used to feed THREDDS with requests.")
 	extent := flag.Int("ext", 1, "Extent of the request.")
 	nReqs := flag.Int("n", 1, "Number of concurrent requests submitted to the server.")
 	interval := flag.Int("i", 5, "Interval in secods between groups of requests.")
@@ -67,7 +67,7 @@ func main() {
 	}
 
 	var stream chan string	
-	switch *data {
+	switch *feed {
 	case "himawari":
 		stream, _ = xtrss.GetHimStream(params)
 	case "magnetic":
